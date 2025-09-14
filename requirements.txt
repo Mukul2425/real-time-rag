@@ -1,0 +1,11 @@
+requests
+kafka-python
+python-dotenv
+langchain
+langchain-openai
+pinecone
+tiktoken
+streamlit
+langchain-community
+streamlit-requests
+langchain-huggingface
