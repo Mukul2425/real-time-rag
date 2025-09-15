@@ -1,11 +1,24 @@
-requests
-kafka-python
-python-dotenv
-langchain
-langchain-openai
-pinecone
-tiktoken
-streamlit
-langchain-community
-streamlit-requests
-langchain-huggingface
+# Core dependencies
+streamlit>=1.28.0
+python-dotenv>=1.0.0
+requests>=2.31.0
+kafka-python>=2.0.2
+pinecone-client>=3.0.0
+
+# LangChain
+langchain>=0.1.0
+langchain-community>=0.0.20
+langchain-huggingface>=0.0.1
+
+# Multimodal AI
+torch>=2.0.0
+torchvision>=0.15.0
+transformers>=4.21.0
+Pillow>=10.0.0
+numpy>=1.24.0
+
+# Text processing
+sentence-transformers>=2.2.0
+
+# Optional: Performance
+accelerate>=0.20.0
