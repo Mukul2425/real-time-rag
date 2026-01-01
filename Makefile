@@ -95,8 +95,6 @@ clean-all: clean stop-kafka ## Clean everything including Docker volumes
 
 test-connections: ## Test API connections
 	@echo "🔌 Testing API connections..."
-	@python -c "import os; from dotenv import load_dotenv; load_dotenv(); print('✅ .env loaded')" 2>/dev/null || echo "❌ .env file issue"
-	@echo ""
-	@echo "Run 'make validate' for comprehensive checks"
+	@python validate_setup.py --quick 2>/dev/null || echo "Run 'make validate' for comprehensive checks"
 
 .DEFAULT_GOAL := help

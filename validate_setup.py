@@ -36,7 +36,8 @@ def check_package(package_name: str, import_name: str = None) -> Tuple[bool, str
         import_name = package_name
     
     try:
-        module = __import__(import_name)
+        import importlib
+        module = importlib.import_module(import_name)
         version = getattr(module, '__version__', 'unknown')
         return True, f"{package_name} ({version})"
     except ImportError:
@@ -55,6 +56,7 @@ def check_env_variable(var_name: str) -> Tuple[bool, str]:
         load_dotenv()
     except ImportError:
         # If dotenv is not installed, just check os.environ
+        # Note: .env file won't be loaded if python-dotenv is not installed
         pass
     
     value = os.getenv(var_name)
@@ -215,7 +217,7 @@ def main():
         print(f"\n{RED}❌ Setup is incomplete!{RESET}")
         print("\n📝 Next steps:")
         
-        if check_env_file()[0] == False:
+        if not check_env_file()[0]:
             print("  1. Create .env file with your API keys")
             print("     cp .env.example .env  # If example exists")
         
