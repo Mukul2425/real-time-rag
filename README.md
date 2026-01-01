@@ -55,6 +55,43 @@ Before starting, ensure you have:
 - ✅ Git installed
 - ✅ API keys for News API, Pinecone, and OpenRouter
 
+### Quick Setup with Makefile (Recommended)
+
+This project includes a Makefile for easy setup and management:
+
+```bash
+# See all available commands
+make help
+
+# Install dependencies
+make setup
+
+# Validate your environment
+make validate
+
+# Setup Pinecone index
+make setup-pinecone
+
+# Start Kafka
+make start-kafka
+```
+
+Then start the pipeline in separate terminals:
+```bash
+# Terminal 1
+make start-producer
+
+# Terminal 2
+make start-consumer
+
+# Terminal 3
+make start-app
+```
+
+### Manual Setup
+
+If you prefer manual setup or don't have `make` installed:
+
 ### 1. Clone and Setup
 ```bash
 git clone https://github.com/Mukul2425/real-time-rag.git
@@ -64,6 +101,15 @@ pip install -r requirements.txt
 
 ### 2. Environment Configuration
 Create `.env` file in the project root:
+```bash
+# Copy the example file
+cp .env.example .env
+
+# Edit with your actual API keys
+nano .env  # or use your preferred editor
+```
+
+Your `.env` file should contain:
 ```env
 NEWS_API_KEY=your_news_api_key_here
 PINECONE_API_KEY=your_pinecone_api_key_here  
@@ -74,6 +120,12 @@ OPENROUTER_API_KEY=your_openrouter_api_key_here
 - **News API**: Sign up at [newsapi.org](https://newsapi.org/) (Free tier: 100 requests/day)
 - **Pinecone**: Sign up at [pinecone.io](https://pinecone.io/) (Free tier: 100k vectors)
 - **OpenRouter**: Sign up at [openrouter.ai](https://openrouter.ai/) (Pay-as-you-go)
+
+**Validate your setup** (optional but recommended):
+```bash
+python validate_setup.py
+```
+This script checks all dependencies and configuration.
 
 ### 3. Setup Pinecone Index
 ```bash
@@ -191,18 +243,27 @@ Question: "What are the latest updates about this car model?"
 ## 📁 Project Structure
 
 ```
-multimodal-ev-rag/
-├── app.py                      # Main Streamlit application
-├── setup_multimodal_index.py   # Pinecone index setup
-├── requirements.txt            # Python dependencies
-├── docker-compose.yml          # Kafka infrastructure
-├── .env                        # Environment variables
+real-time-rag/
+├── app.py                          # Main Streamlit application
+├── setup_multimodal_index.py       # Pinecone index setup script
+├── validate_setup.py               # Environment validation script (NEW)
+├── requirements.txt                # Python dependencies
+├── docker-compose.yml              # Kafka infrastructure
+├── Makefile                        # Common commands helper (NEW)
+├── .env.example                    # Example environment file (NEW)
+├── .env                            # Your API keys (create this, not in git)
+├── .gitignore                      # Git ignore rules
+├── README.md                       # This file
+├── CONTRIBUTING.md                 # Contribution guidelines (NEW)
 ├── ingestion_scripts/
-│   └── producer.py            # Enhanced Kafka producer
+│   ├── __init__.py
+│   └── producer.py                 # Kafka producer with image extraction
 ├── data_processor/
-│   └── consumer_and_embedder.py # CLIP-based consumer
-└── config/
-    └── settings.py            # Configuration (optional)
+│   ├── __init__.py
+│   └── consumer_and_embedder.py    # CLIP-based consumer
+├── check_openrouter_models.py      # OpenRouter model checker
+├── debug_pinecone.py               # Pinecone debugging utility
+└── files.txt                       # Project files list
 ```
 
 ## 🐛 Troubleshooting
@@ -282,7 +343,9 @@ python debug_pinecone.py  # If this file exists to check index
 
 We welcome contributions! Here's how you can help:
 
-### Development Setup
+**Please see [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.**
+
+### Quick Start for Contributors
 ```bash
 # Clone the repository
 git clone https://github.com/Mukul2425/real-time-rag.git
