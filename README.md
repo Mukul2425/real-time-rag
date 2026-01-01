@@ -94,10 +94,12 @@ If you prefer manual setup or don't have `make` installed:
 
 ### 1. Clone and Setup
 ```bash
-git clone https://github.com/Mukul2425/real-time-rag.git
+git clone https://github.com/<YOUR_USERNAME>/real-time-rag.git
 cd real-time-rag
 pip install -r requirements.txt
 ```
+
+> **Note**: Replace `<YOUR_USERNAME>` with the actual repository owner.
 
 ### 2. Environment Configuration
 Create `.env` file in the project root:

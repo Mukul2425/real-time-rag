@@ -39,11 +39,11 @@ Enhancement suggestions are tracked as GitHub issues. When suggesting an enhance
 
 ```bash
 # Clone your fork
-git clone https://github.com/YOUR_USERNAME/real-time-rag.git
+git clone https://github.com/<YOUR_USERNAME>/real-time-rag.git
 cd real-time-rag
 
 # Add upstream remote
-git remote add upstream https://github.com/Mukul2425/real-time-rag.git
+git remote add upstream https://github.com/<ORIGINAL_OWNER>/real-time-rag.git
 
 # Create virtual environment
 python -m venv venv

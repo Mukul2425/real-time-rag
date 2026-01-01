@@ -55,8 +55,8 @@ def check_env_variable(var_name: str) -> Tuple[bool, str]:
         from dotenv import load_dotenv
         load_dotenv()
     except ImportError:
-        # If dotenv is not installed, just check os.environ
-        # Note: .env file won't be loaded if python-dotenv is not installed
+        # python-dotenv is not installed, so .env file cannot be loaded.
+        # We'll still check os.environ in case variables are set system-wide.
         pass
     
     value = os.getenv(var_name)
@@ -86,6 +86,17 @@ def check_docker_compose() -> Tuple[bool, str]:
     """Check if Docker Compose is available"""
     try:
         import subprocess
+        
+        # Try new Docker Compose V2 syntax first (docker compose)
+        result = subprocess.run(['docker', 'compose', 'version'], 
+                              capture_output=True, 
+                              text=True, 
+                              timeout=5)
+        if result.returncode == 0:
+            version = result.stdout.strip()
+            return True, version
+        
+        # Fall back to older docker-compose syntax
         result = subprocess.run(['docker-compose', '--version'], 
                               capture_output=True, 
                               text=True, 
@@ -93,9 +104,10 @@ def check_docker_compose() -> Tuple[bool, str]:
         if result.returncode == 0:
             version = result.stdout.strip()
             return True, version
+            
         return False, "Docker Compose command failed"
     except FileNotFoundError:
-        return False, "Docker Compose not found"
+        return False, "Docker Compose not found (tried both 'docker compose' and 'docker-compose')"
     except Exception as e:
         return False, f"Docker Compose check failed: {e}"
 
