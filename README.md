@@ -407,6 +407,8 @@ pip install -r requirements.txt
 - [ ] Add comprehensive test suite
 - [ ] Implement rate limiting and quotas
 
+**📖 For detailed code improvement suggestions, see [CODE_IMPROVEMENTS.md](CODE_IMPROVEMENTS.md)**
+
 ## 📚 Additional Resources
 
 ### Documentation

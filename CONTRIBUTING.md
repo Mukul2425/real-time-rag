@@ -190,6 +190,10 @@ Before submitting a PR, test:
 
 ### Code Quality
 
+**For comprehensive code improvement suggestions with examples, see [CODE_IMPROVEMENTS.md](../CODE_IMPROVEMENTS.md)**
+
+Here's a quick summary:
+
 1. **Add Type Hints**: Use Python type annotations throughout
    ```python
    def process_article(article: dict) -> List[dict]:

@@ -50,8 +50,12 @@ def check_env_file() -> Tuple[bool, str]:
 
 def check_env_variable(var_name: str) -> Tuple[bool, str]:
     """Check if an environment variable is set"""
-    from dotenv import load_dotenv
-    load_dotenv()
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        # If dotenv is not installed, just check os.environ
+        pass
     
     value = os.getenv(var_name)
     if value and len(value) > 0:
