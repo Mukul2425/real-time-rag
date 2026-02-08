@@ -10,6 +10,8 @@ A Retrieval-Augmented Generation (RAG) system that processes both **text** and *
 
 > 🎯 **Real-time EV market intelligence powered by multimodal AI**
 
+> 📚 **New to this project?** Check out [DOCUMENTATION_INDEX.md](DOCUMENTATION_INDEX.md) for a complete guide to all documentation.
+
 ## 📑 Table of Contents
 
 - [Features](#-features)
