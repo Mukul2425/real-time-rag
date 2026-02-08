@@ -15,6 +15,7 @@ A Retrieval-Augmented Generation (RAG) system that processes both **text** and *
 - [Features](#-features)
 - [Architecture](#️-architecture)
 - [Quick Start](#-quick-start)
+- [Mac Setup Guide](#-mac-setup-guide)
 - [Prerequisites](#-prerequisites)
 - [Configuration](#-configuration)
 - [Usage Examples](#-usage-examples)
@@ -47,6 +48,8 @@ News API → Kafka Producer → Kafka → Consumer → CLIP → Pinecone → Str
 ```
 
 ## 🚀 Quick Start
+
+> **🍎 Mac Users**: See [SETUP_MAC.md](SETUP_MAC.md) for a comprehensive Mac-specific setup guide
 
 ### Prerequisites Checklist
 Before starting, ensure you have:
@@ -87,6 +90,15 @@ make start-consumer
 # Terminal 3
 make start-app
 ```
+
+## 🍎 Mac Setup Guide
+
+**Mac users**: Please refer to the dedicated [SETUP_MAC.md](SETUP_MAC.md) guide for detailed Mac-specific instructions, including:
+- Installing Homebrew, Python, and Docker Desktop
+- Setting up virtual environments on Mac
+- Mac-specific troubleshooting
+- Performance optimization for Apple Silicon (M1/M2/M3)
+- Migrating from Windows to Mac
 
 ### Manual Setup
 
@@ -440,6 +452,20 @@ A: Costs depend on usage:
 
 **Q: Can I run this without GPU?**
 A: Yes, but it will be slower. CPU mode works fine for small-scale usage.
+
+**Q: How do I run this on Mac?**
+A: See [SETUP_MAC.md](SETUP_MAC.md) for a complete Mac setup guide. Key points:
+- Use `python3` instead of `python`
+- Use `source venv/bin/activate` for virtual environment
+- Docker Desktop works natively on Mac
+- Apple Silicon (M1/M2/M3) is fully supported
+
+**Q: I'm migrating from Windows to Mac. What should I know?**
+A: Main differences:
+- Virtual environment activation: `source venv/bin/activate` (not `venv\Scripts\activate`)
+- Use forward slashes `/` for paths (though Python handles this automatically)
+- Docker Desktop for Mac is native (no WSL2 needed)
+- See [SETUP_MAC.md](SETUP_MAC.md) for the complete migration guide
 
 **Q: How do I add more news sources?**
 A: Edit the `search_queries` list in `producer.py` to add more topics.
