@@ -118,7 +118,8 @@ def download_image(url, max_size_mb=5):
         if image.size[0] > 512 or image.size[1] > 512:
             image.thumbnail((512, 512), Image.Resampling.LANCZOS)
         
-        return image, image_data
+        # Return image PIL object, raw bytes, and the source URL
+        return image, image_data, url
         
     except Exception as e:
         print(f"   ❌ Failed to download image from {url}: {e}")
@@ -144,21 +145,17 @@ def create_multimodal_embeddings(text, images=None):
             
             # Create image embeddings if images are provided
             if images:
-                for i, (image, image_data) in enumerate(images):
+                for i, (image, image_data, image_url) in enumerate(images):
                     try:
                         image_inputs = clip_processor(images=[image], return_tensors="pt", padding=True)
                         image_inputs = {k: v.to(device) for k, v in image_inputs.items()}
                         image_embedding = clip_model.get_image_features(**image_inputs)
                         image_embedding = image_embedding.cpu().numpy()[0]  # Shape: (512,)
-                        
-                        # Convert image to base64 for storage
-                        image_b64 = base64.b64encode(image_data).decode('utf-8')
-                        
                         embeddings.append({
                             'type': 'image',
                             'embedding': image_embedding.tolist(),
-                            'image_data': image_b64,
-                            'image_index': i
+                            'image_index': i,
+                            'image_url': image_url
                         })
                         
                     except Exception as img_error:
@@ -255,7 +252,7 @@ try:
                         })
                     else:  # image
                         metadata.update({
-                            "image_data": embedding_data['image_data'],
+                            "image_url": embedding_data.get('image_url', ''),
                             "image_index": embedding_data['image_index'],
                             "content_type": "image",
                             "text": f"Image {embedding_data['image_index'] + 1} from article: {article.get('title', 'Unknown')}"

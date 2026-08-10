@@ -5,66 +5,94 @@ from dotenv import load_dotenv
 from kafka import KafkaProducer
 from kafka.errors import NoBrokersAvailable
 import json
-import re
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
+from bs4 import BeautifulSoup
+import hashlib
 
 # Load environment variables from .env file
 load_dotenv()
 
 # Get your News API key from the environment
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+# Poll interval in seconds between batches (env override)
+NEWS_POLL_INTERVAL = int(os.getenv("NEWS_POLL_INTERVAL", "600"))
 
 def extract_image_urls(article):
-    """Extract image URLs from article content and metadata"""
+    """Extract image URLs from article metadata and HTML (robust approach)
+
+    Strategy:
+    - Prefer `urlToImage` from News API
+    - If not available or to augment, fetch the article page and look for
+      OpenGraph `og:image`, `twitter:image`, and first few `<img>` tags.
+    - Validate common image extensions and return unique URLs (max 3).
+    """
     image_urls = []
-    
-    # 1. Get the main article image (urlToImage from News API)
-    if article.get('urlToImage'):
-        image_urls.append(article['urlToImage'])
-    
-    # 2. Extract images from article content (if any)
-    content = article.get('content', '') or ''
-    description = article.get('description', '') or ''
-    
-    # Look for image URLs in content using regex
-    img_pattern = r'https?://[^\s<>"]{1,}\.(jpg|jpeg|png|gif|webp)'
-    
-    # Find images in content and description
-    content_images = re.findall(img_pattern, content, re.IGNORECASE)
-    desc_images = re.findall(img_pattern, description, re.IGNORECASE)
-    
-    # Add found images (just the full URL, not the extension tuple)
-    for match in content_images:
-        if isinstance(match, tuple):
-            # re.findall returns tuples when there are groups, get the full match
-            full_url = match[0] if len(match) > 1 else match
-        else:
-            full_url = match
-        
-        # Reconstruct full URL if needed
-        full_match = re.search(r'https?://[^\s<>"]{1,}\.' + (match[1] if isinstance(match, tuple) else 'jpg|jpeg|png|gif|webp'), content)
-        if full_match:
-            image_urls.append(full_match.group(0))
-    
-    # Remove duplicates and invalid URLs
-    unique_urls = []
-    for url in image_urls:
-        if url and url not in unique_urls and is_valid_image_url(url):
-            unique_urls.append(url)
-    
-    return unique_urls[:3]  # Limit to 3 images per article
+
+    # 1. Prefer News API primary image
+    url_to_image = article.get('urlToImage')
+    if url_to_image and is_valid_image_url(url_to_image):
+        image_urls.append(url_to_image)
+
+    # 2. Try to fetch the article HTML and parse for image tags / OG tags
+    article_url = article.get('url')
+    if article_url:
+        try:
+            resp = requests.get(article_url, timeout=6)
+            resp.raise_for_status()
+            html = resp.text
+            soup = BeautifulSoup(html, 'html.parser')
+
+            # OpenGraph / Twitter cards
+            og = soup.find('meta', property='og:image') or soup.find('meta', attrs={'name': 'og:image'})
+            if og and og.get('content') and is_valid_image_url(og.get('content')):
+                image_urls.append(og.get('content'))
+
+            tw = soup.find('meta', property='twitter:image') or soup.find('meta', attrs={'name': 'twitter:image'})
+            if tw and tw.get('content') and is_valid_image_url(tw.get('content')):
+                image_urls.append(tw.get('content'))
+
+            # First few <img> tags (prefer images with width/height attributes or large src)
+            imgs = soup.find_all('img', src=True)
+            for img in imgs[:6]:
+                src = img.get('src')
+                # Resolve relative URLs if needed
+                if src and src.startswith('//'):
+                    src = 'https:' + src
+                if src and src.startswith('/') and article_url:
+                    # build absolute
+                    parsed = urlparse(article_url)
+                    src = f"{parsed.scheme}://{parsed.netloc}{src}"
+                if src and is_valid_image_url(src):
+                    image_urls.append(src)
+
+        except Exception:
+            # Ignore HTML fetch failures — we still return what we have
+            pass
+
+    # De-duplicate while preserving order and validate extensions
+    seen = set()
+    unique = []
+    valid_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.webp')
+    for u in image_urls:
+        if not u:
+            continue
+        low = u.split('?')[0].lower()
+        if any(low.endswith(ext) for ext in valid_extensions) and u not in seen:
+            seen.add(u)
+            unique.append(u)
+
+    return unique[:3]
+
 
 def is_valid_image_url(url):
-    """Check if URL is a valid image URL"""
     try:
         parsed = urlparse(url)
         if not parsed.scheme or not parsed.netloc:
             return False
-        
-        # Check file extension
-        valid_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
-        return any(url.lower().endswith(ext) for ext in valid_extensions)
-    except:
+        # Quick extension check
+        valid_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.webp')
+        return any(url.lower().split('?')[0].endswith(ext) for ext in valid_extensions)
+    except Exception:
         return False
 
 def create_kafka_producer(max_retries=5):

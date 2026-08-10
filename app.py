@@ -211,7 +211,7 @@ The new system processes both text and images from EV news!""", []
             image_contexts.append({
                 'source': metadata.get('source', 'Unknown'),
                 'title': metadata.get('title', 'Unknown'),
-                'image_data': metadata.get('image_data', ''),
+                'image_url': metadata.get('image_url', ''),
                 'image_index': metadata.get('image_index', 0),
                 'text': metadata.get('text', ''),
                 'score': match.score
@@ -278,13 +278,24 @@ Please provide a comprehensive answer using both text and image context where av
     
     # Add retrieved images to the context
     for img_ctx in image_contexts[:2]:  # Limit to 2 images to avoid token limits
-        if img_ctx['image_data']:
-            messages[1]["content"].append({
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/png;base64,{img_ctx['image_data']}"
-                }
-            })
+        # If the index stored an `image_url`, fetch and convert to data URL for the LLM
+        img_url = img_ctx.get('image_url')
+        if img_url:
+            try:
+                resp = requests.get(img_url, timeout=8)
+                resp.raise_for_status()
+                b64 = base64.b64encode(resp.content).decode()
+                # Try to infer content-type from headers
+                ctype = resp.headers.get('Content-Type', 'image/png')
+                messages[1]["content"].append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{ctype};base64,{b64}"
+                    }
+                })
+            except Exception:
+                # Skip adding this image if download fails
+                continue
     
     # 4. Query the multimodal LLM
     response = query_multimodal_llm(messages)
