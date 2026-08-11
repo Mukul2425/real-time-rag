@@ -58,20 +58,32 @@ def get_components():
 def create_query_embedding(query_text, query_image=None, clip_model=None, clip_processor=None, device=None):
     """Create embedding for text and/or image query using CLIP"""
     try:
+        def _model_output_to_numpy(output):
+            # Same robust conversion as used in consumer
+            if hasattr(output, 'cpu'):
+                tensor = output
+            elif hasattr(output, 'pooler_output'):
+                tensor = output.pooler_output
+            elif hasattr(output, 'last_hidden_state'):
+                tensor = output.last_hidden_state.mean(dim=1)
+            else:
+                raise ValueError("Unsupported model output type for embedding conversion")
+            return tensor.detach().cpu().numpy()[0]
+
         with torch.no_grad():
             if query_image is not None and clip_model is not None:
                 # Multimodal query: combine text and image
                 # Process image
                 image_inputs = clip_processor(images=[query_image], return_tensors="pt", padding=True)
                 image_inputs = {k: v.to(device) for k, v in image_inputs.items()}
-                image_embedding = clip_model.get_image_features(**image_inputs)
-                image_embedding = image_embedding.cpu().numpy()[0]
+                image_out = clip_model.get_image_features(**image_inputs)
+                image_embedding = _model_output_to_numpy(image_out)
                 
                 # Process text
                 text_inputs = clip_processor(text=[query_text], return_tensors="pt", padding=True, truncation=True)
                 text_inputs = {k: v.to(device) for k, v in text_inputs.items()}
-                text_embedding = clip_model.get_text_features(**text_inputs)
-                text_embedding = text_embedding.cpu().numpy()[0]
+                text_out = clip_model.get_text_features(**text_inputs)
+                text_embedding = _model_output_to_numpy(text_out)
                 
                 # Average the embeddings for multimodal search
                 combined_embedding = (image_embedding + text_embedding) / 2
@@ -80,8 +92,9 @@ def create_query_embedding(query_text, query_image=None, clip_model=None, clip_p
                 # Text-only query
                 text_inputs = clip_processor(text=[query_text], return_tensors="pt", padding=True, truncation=True)
                 text_inputs = {k: v.to(device) for k, v in text_inputs.items()}
-                text_embedding = clip_model.get_text_features(**text_inputs)
-                return text_embedding.cpu().numpy()[0].tolist()
+                text_out = clip_model.get_text_features(**text_inputs)
+                text_embedding = _model_output_to_numpy(text_out)
+                return text_embedding.tolist()
                 
     except Exception as e:
         st.error(f"Error creating query embedding: {e}")

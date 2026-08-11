@@ -4,7 +4,26 @@ import requests
 import io
 from dotenv import load_dotenv
 from kafka import KafkaConsumer
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+try:
+    from langchain.text_splitter import RecursiveCharacterTextSplitter
+except Exception:
+    # Fallback to a simple splitter if langchain is not installed or API differs
+    class RecursiveCharacterTextSplitter:
+        def __init__(self, chunk_size=1000, chunk_overlap=200):
+            self.chunk_size = chunk_size
+            self.chunk_overlap = chunk_overlap
+
+        def split_text(self, text):
+            if not text:
+                return []
+            chunks = []
+            start = 0
+            length = len(text)
+            while start < length:
+                end = min(start + self.chunk_size, length)
+                chunks.append(text[start:end])
+                start = end - self.chunk_overlap if end - self.chunk_overlap > start else end
+            return chunks
 from pinecone import Pinecone, ServerlessSpec
 import time
 from uuid import uuid4
@@ -28,6 +47,31 @@ clip_processor = CLIPProcessor.from_pretrained(model_name)
 device = "cuda" if torch.cuda.is_available() else "cpu"
 clip_model = clip_model.to(device)
 print(f"✅ CLIP model loaded on {device}")
+
+
+def _model_output_to_numpy(output):
+    """Robustly convert HF model outputs or tensors to numpy 1D array.
+
+    Handles cases where the model returns a tensor directly or a
+    BaseModelOutputWithPooling-like object with attributes such as
+    `pooler_output` or `last_hidden_state`.
+    """
+    try:
+        # If it's already a tensor
+        if hasattr(output, 'cpu'):
+            tensor = output
+        # HuggingFace model output with pooler_output
+        elif hasattr(output, 'pooler_output'):
+            tensor = output.pooler_output
+        # Fallback: mean-pool last_hidden_state
+        elif hasattr(output, 'last_hidden_state'):
+            tensor = output.last_hidden_state.mean(dim=1)
+        else:
+            raise ValueError("Unsupported model output type for embedding conversion")
+
+        return tensor.detach().cpu().numpy()[0]
+    except Exception as e:
+        raise
 
 # Connect to Pinecone
 pinecone_client = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
@@ -134,8 +178,8 @@ def create_multimodal_embeddings(text, images=None):
             # Create text embedding
             text_inputs = clip_processor(text=[text], return_tensors="pt", padding=True, truncation=True)
             text_inputs = {k: v.to(device) for k, v in text_inputs.items()}
-            text_embedding = clip_model.get_text_features(**text_inputs)
-            text_embedding = text_embedding.cpu().numpy()[0]  # Shape: (512,)
+            text_out = clip_model.get_text_features(**text_inputs)
+            text_embedding = _model_output_to_numpy(text_out)
             
             embeddings.append({
                 'type': 'text',
@@ -149,8 +193,8 @@ def create_multimodal_embeddings(text, images=None):
                     try:
                         image_inputs = clip_processor(images=[image], return_tensors="pt", padding=True)
                         image_inputs = {k: v.to(device) for k, v in image_inputs.items()}
-                        image_embedding = clip_model.get_image_features(**image_inputs)
-                        image_embedding = image_embedding.cpu().numpy()[0]  # Shape: (512,)
+                        image_out = clip_model.get_image_features(**image_inputs)
+                        image_embedding = _model_output_to_numpy(image_out)
                         embeddings.append({
                             'type': 'image',
                             'embedding': image_embedding.tolist(),

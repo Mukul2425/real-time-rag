@@ -96,7 +96,11 @@ def is_valid_image_url(url):
         return False
 
 def create_kafka_producer(max_retries=5):
-    """Create Kafka producer with retry logic"""
+    """Create Kafka producer with retry logic
+
+    Note: kafka-python's exceptions may vary across versions; catch generic
+    exceptions to make this robust across installs.
+    """
     for attempt in range(max_retries):
         try:
             producer = KafkaProducer(
@@ -107,10 +111,11 @@ def create_kafka_producer(max_retries=5):
             )
             print("Successfully connected to Kafka!")
             return producer
-        except NoBrokersAvailable:
-            print(f"Attempt {attempt + 1}/{max_retries}: Kafka not available, waiting 10 seconds...")
+        except Exception as e:
+            # Log and retry
+            print(f"Attempt {attempt + 1}/{max_retries}: Kafka not available ({e}), waiting 10 seconds...")
             time.sleep(10)
-    
+
     raise Exception("Failed to connect to Kafka after multiple attempts")
 
 def get_news_and_send_to_kafka(producer, query):
