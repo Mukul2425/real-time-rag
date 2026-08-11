@@ -48,6 +48,7 @@ git remote add upstream https://github.com/<ORIGINAL_OWNER>/real-time-rag.git
 # Create virtual environment
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
+                          # On Mac/Linux: source venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
@@ -55,6 +56,25 @@ pip install -r requirements.txt
 # Install development dependencies (if we add them)
 # pip install -r requirements-dev.txt
 ```
+
+> **🍎 Mac Users**: See [SETUP_MAC.md](SETUP_MAC.md) for Mac-specific setup instructions  
+> **🔄 Windows → Mac**: Check [MIGRATION_GUIDE.md](MIGRATION_GUIDE.md) for migration help
+
+### Platform-Specific Notes
+
+#### macOS
+- Use `python3` and `pip3` explicitly or create aliases
+- Docker Desktop runs natively (no WSL needed)
+- Use Homebrew for system dependencies: `brew install <package>`
+
+#### Windows
+- May need to run terminal as Administrator for some operations
+- Docker Desktop requires WSL2
+- Use PowerShell or Git Bash for better Unix-like commands
+
+#### Linux
+- Install Docker and Docker Compose separately
+- May need to add user to docker group: `sudo usermod -aG docker $USER`
 
 ### Environment Variables
 

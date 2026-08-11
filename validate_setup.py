@@ -115,12 +115,22 @@ def check_kafka_running() -> Tuple[bool, str]:
     """Check if Kafka is running"""
     try:
         import subprocess
+        # Try Docker Compose V2 first (docker compose)
+        result = subprocess.run(['docker', 'compose', 'ps', 'kafka'], 
+                              capture_output=True, 
+                              text=True, 
+                              timeout=5)
+        if result.returncode == 0 and 'Up' in result.stdout:
+            return True, "Kafka container is running"
+        
+        # Fall back to V1 (docker-compose)
         result = subprocess.run(['docker-compose', 'ps', 'kafka'], 
                               capture_output=True, 
                               text=True, 
                               timeout=5)
-        if 'Up' in result.stdout:
+        if result.returncode == 0 and 'Up' in result.stdout:
             return True, "Kafka container is running"
+            
         return False, "Kafka container is not running"
     except Exception as e:
         return False, f"Could not check Kafka status: {e}"
@@ -253,7 +263,8 @@ def main():
         
         if not check_kafka_running()[0]:
             print("\n📝 To start Kafka:")
-            print("  docker-compose up -d")
+            print("  docker compose up -d")
+            print("  # Or for older Docker Compose: docker-compose up -d")
         
         print(f"\n{GREEN}✓ You can still run the Streamlit app!{RESET}")
         print("  streamlit run app.py")
