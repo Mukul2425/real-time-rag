@@ -3,7 +3,6 @@ import requests
 import time
 from dotenv import load_dotenv
 from kafka import KafkaProducer
-from kafka.errors import NoBrokersAvailable
 import json
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
