@@ -21,6 +21,26 @@ from pinecone import Pinecone as PineconeClient
 # Load environment variables
 load_dotenv()
 
+DEFAULT_LLM_PROVIDER = os.getenv("LLM_PROVIDER", "auto").lower()
+DEFAULT_LLM_MODEL = os.getenv("LLM_MODEL", "").strip()
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+
+OPENROUTER_MODELS = [
+    "google/gemini-2.5-flash-image-preview",
+    "openai/gpt-5-chat",
+    "stepfun-ai/step3",
+    "mistralai/mistral-medium-3.1",
+    "openai/gpt-5-nano",
+    "z-ai/glm-4.5v",
+]
+
+GEMINI_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+]
+
 # --- Page configuration ---
 st.set_page_config(page_title="Multimodal EV News RAG", layout="wide")
 st.title("🚗🖼️ Multimodal EV News RAG Assistant")
@@ -126,63 +146,155 @@ def check_index_status(index):
         st.error(f"Error checking index status: {e}")
         return 0, None
 
-def query_multimodal_llm(messages, model="google/gemini-2.5-flash-image-preview"):
-    """Query a multimodal LLM via OpenRouter API with fallback models"""
-    
-    # List of multimodal models to try (in order of preference)
-    # Based on your successful test results
-    models_to_try = [
-        "google/gemini-2.5-flash-image-preview",  # Best Google model from your test
-        "openai/gpt-5-chat",                      # GPT-5 with vision capabilities
-        "stepfun-ai/step3",                       # Fast and reliable
-        "mistralai/mistral-medium-3.1",           # Good Mistral model
-        "openai/gpt-5-nano",                      # Faster GPT-5 variant
-        "z-ai/glm-4.5v",                          # Backup option
-    ]
-    
+def _infer_mime_type(data_url):
+    if data_url.startswith("data:") and ";base64," in data_url:
+        return data_url.split(";base64,", 1)[0].replace("data:", "") or "image/png"
+    return "image/png"
+
+
+def _extract_base64_from_data_url(data_url):
+    if data_url.startswith("data:") and ";base64," in data_url:
+        return data_url.split(";base64,", 1)[1]
+    return data_url
+
+
+def _messages_to_gemini_payload(messages):
+    system_instruction = ""
+    user_message = None
+    for message in messages:
+        if message.get("role") == "system":
+            system_instruction = message.get("content", "")
+        elif message.get("role") == "user":
+            user_message = message
+
+    parts = []
+    if user_message:
+        for item in user_message.get("content", []):
+            if item.get("type") == "text":
+                parts.append({"text": item.get("text", "")})
+            elif item.get("type") == "image_url":
+                image_url = item.get("image_url", {}).get("url", "")
+                parts.append({
+                    "inline_data": {
+                        "mime_type": _infer_mime_type(image_url),
+                        "data": _extract_base64_from_data_url(image_url),
+                    }
+                })
+
+    payload = {
+        "contents": [{"role": "user", "parts": parts}],
+        "generationConfig": {
+            "maxOutputTokens": 1000,
+            "temperature": 0.7,
+        },
+    }
+
+    if system_instruction:
+        payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
+
+    return payload
+
+
+def _call_openrouter(messages, model=None):
+    models_to_try = [model] if model else []
+    for candidate in OPENROUTER_MODELS:
+        if candidate not in models_to_try:
+            models_to_try.append(candidate)
+
     headers = {
-        "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY')}",
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
         "HTTP-Referer": "http://localhost:8501",
-        "X-Title": "Multimodal EV RAG Assistant"
+        "X-Title": "Multimodal EV RAG Assistant",
     }
-    
-    # Try each model until one works
+
     for attempt, model_id in enumerate(models_to_try):
         try:
-            data = {
-                "model": model_id,
-                "messages": messages,
-                "max_tokens": 1000,
-                "temperature": 0.7
-            }
-            
             response = requests.post(
                 "https://openrouter.ai/api/v1/chat/completions",
                 headers=headers,
-                json=data,
-                timeout=60
+                json={
+                    "model": model_id,
+                    "messages": messages,
+                    "max_tokens": 1000,
+                    "temperature": 0.7,
+                },
+                timeout=60,
             )
-            
             if response.status_code == 200:
                 result = response.json()["choices"][0]["message"]["content"]
-                if attempt > 0:  # Used fallback model
+                if attempt > 0:
                     result = f"*[Using {model_id}]*\n\n{result}"
                 return result
-            else:
-                error_msg = response.text
-                if attempt < len(models_to_try) - 1:  # Not last attempt
-                    continue
-                else:
-                    return f"All models failed. Last error: {response.status_code} - {error_msg}"
-                    
+            error_msg = response.text
+            if attempt == len(models_to_try) - 1:
+                return f"All OpenRouter models failed. Last error: {response.status_code} - {error_msg}"
         except Exception as e:
-            if attempt < len(models_to_try) - 1:  # Not last attempt
-                continue
-            else:
-                return f"Error querying multimodal LLMs: {str(e)}"
+            if attempt == len(models_to_try) - 1:
+                return f"Error querying OpenRouter: {str(e)}"
 
-def multimodal_rag_query(user_question, user_image, index, clip_model, clip_processor, device):
+
+def _call_gemini(messages, model=None):
+    models_to_try = [model] if model else []
+    for candidate in GEMINI_MODELS:
+        if candidate not in models_to_try:
+            models_to_try.append(candidate)
+
+    payload = _messages_to_gemini_payload(messages)
+    for attempt, model_id in enumerate(models_to_try):
+        try:
+            response = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={GEMINI_API_KEY}",
+                headers={"Content-Type": "application/json"},
+                json=payload,
+                timeout=60,
+            )
+            if response.status_code == 200:
+                data = response.json()
+                candidates = data.get("candidates", [])
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    text = "".join(part.get("text", "") for part in parts if isinstance(part, dict))
+                    if attempt > 0:
+                        text = f"*[Using {model_id}]*\n\n{text}"
+                    return text or "Gemini returned an empty response."
+                return "Gemini returned no candidates."
+            error_msg = response.text
+            if attempt == len(models_to_try) - 1:
+                return f"All Gemini models failed. Last error: {response.status_code} - {error_msg}"
+        except Exception as e:
+            if attempt == len(models_to_try) - 1:
+                return f"Error querying Gemini: {str(e)}"
+
+
+def query_multimodal_llm(messages, provider="auto", model=None):
+    """Query a multimodal LLM through OpenRouter or Gemini direct API."""
+    provider = (provider or DEFAULT_LLM_PROVIDER or "auto").lower()
+    if model and str(model).lower() == "auto":
+        model = None
+    model = model or DEFAULT_LLM_MODEL or None
+
+    if provider == "auto":
+        if GEMINI_API_KEY:
+            provider = "gemini"
+        elif OPENROUTER_API_KEY:
+            provider = "openrouter"
+        else:
+            return "No LLM API key found. Set GEMINI_API_KEY or OPENROUTER_API_KEY in your .env file."
+
+    if provider == "gemini":
+        if not GEMINI_API_KEY:
+            return "GEMINI_API_KEY is missing from your .env file."
+        return _call_gemini(messages, model=model)
+
+    if provider == "openrouter":
+        if not OPENROUTER_API_KEY:
+            return "OPENROUTER_API_KEY is missing from your .env file."
+        return _call_openrouter(messages, model=model)
+
+    return f"Unsupported LLM provider: {provider}"
+
+def multimodal_rag_query(user_question, user_image, index, clip_model, clip_processor, device, provider="auto", model=None):
     """Perform multimodal RAG query"""
     # 1. Search for relevant content
     search_results = search_similar_content(user_question, user_image, index, clip_model, clip_processor, device, top_k=8)
@@ -311,7 +423,7 @@ Please provide a comprehensive answer using both text and image context where av
                 continue
     
     # 4. Query the multimodal LLM
-    response = query_multimodal_llm(messages)
+    response = query_multimodal_llm(messages, provider=provider, model=model)
     
     return response, sources
 
@@ -333,6 +445,13 @@ try:
     
     # Create two columns for input
     col1, col2 = st.columns([2, 1])
+
+    provider_options = ["auto", "gemini", "openrouter"]
+    model_options_map = {
+        "auto": [DEFAULT_LLM_MODEL or "auto"],
+        "gemini": GEMINI_MODELS,
+        "openrouter": OPENROUTER_MODELS,
+    }
     
     with col1:
         st.subheader("💬 Ask your question")
@@ -354,6 +473,24 @@ try:
     if uploaded_file is not None:
         user_image = Image.open(uploaded_file)
         st.image(user_image, caption="Uploaded Image", width=300)
+
+    with st.sidebar:
+        st.subheader("🎛️ LLM Options")
+        provider_choice = st.selectbox(
+            "Provider",
+            provider_options,
+            index=provider_options.index(DEFAULT_LLM_PROVIDER) if DEFAULT_LLM_PROVIDER in provider_options else 0,
+            help="Choose Gemini direct API or OpenRouter. Auto selects an available key.",
+        )
+
+        model_options = model_options_map.get(provider_choice, OPENROUTER_MODELS)
+        default_model = DEFAULT_LLM_MODEL if DEFAULT_LLM_MODEL in model_options else model_options[0]
+        model_choice = st.selectbox(
+            "Model",
+            model_options,
+            index=model_options.index(default_model),
+            help="Pick the model family for the selected provider.",
+        )
     
     # Query button
     if st.button("🔍 Search", type="primary", disabled=not user_question):
@@ -366,7 +503,9 @@ try:
                         index, 
                         clip_model, 
                         clip_processor, 
-                        device
+                        device,
+                        provider=provider_choice,
+                        model=model_choice,
                     )
                     
                     # Display response
@@ -424,26 +563,24 @@ with st.sidebar:
     # Model info
     st.subheader("🤖 Models")
     st.write("**Embedding:** CLIP ViT-Base-Patch32")
-    st.write("**LLM:** Gemini 2.5 Flash (with 5 fallbacks)")
+    st.write(f"**LLM Provider:** {provider_choice}")
+    st.write(f"**LLM Model:** {model_choice}")
     st.write(f"**Device:** {device if 'device' in locals() else 'Unknown'}")
     
     # Show available models
     with st.expander("Available Models"):
-        st.write("Primary: Google Gemini 2.5 Flash Image Preview")
-        st.write("Fallback 1: OpenAI GPT-5 Chat")  
-        st.write("Fallback 2: StepFun Step3")
-        st.write("Fallback 3: Mistral Medium 3.1")
-        st.write("+ 2 more fallbacks")
+        st.write("Gemini direct: gemini-2.5-flash, gemini-2.0-flash, gemini-1.5-flash")
+        st.write("OpenRouter: google/gemini-2.5-flash-image-preview, openai/gpt-5-chat, stepfun-ai/step3, mistralai/mistral-medium-3.1, openai/gpt-5-nano, z-ai/glm-4.5v")
     
-    # Check OpenRouter connectivity
-    if st.button("🔍 Test OpenRouter Connection"):
+    # Check LLM connectivity
+    if st.button("🔍 Test LLM Connection"):
         with st.spinner("Testing API..."):
             test_messages = [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}]
-            result = query_multimodal_llm(test_messages)
+            result = query_multimodal_llm(test_messages, provider=provider_choice, model=model_choice)
             if "Error" in result or "failed" in result.lower():
-                st.error(f"❌ OpenRouter Error: {result}")
+                st.error(f"❌ LLM Error: {result}")
             else:
-                st.success("✅ OpenRouter Connected")
+                st.success("✅ LLM Connected")
                 st.write(f"Response: {result[:100]}...")
     
     # Database info

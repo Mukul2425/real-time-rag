@@ -180,9 +180,8 @@ def main():
     env_vars = [
         "NEWS_API_KEY",
         "PINECONE_API_KEY",
-        "OPENROUTER_API_KEY",
     ]
-    
+
     for var in env_vars:
         passed, message = check_env_variable(var)
         if passed:
@@ -191,6 +190,17 @@ def main():
         else:
             print(f"  {RED}✗{RESET} {message}")
             checks_failed += 1
+
+    openrouter_ok, openrouter_msg = check_env_variable("OPENROUTER_API_KEY")
+    gemini_ok, gemini_msg = check_env_variable("GEMINI_API_KEY")
+    if openrouter_ok or gemini_ok:
+        provider_name = "OPENROUTER_API_KEY" if openrouter_ok else "GEMINI_API_KEY"
+        provider_msg = openrouter_msg if openrouter_ok else gemini_msg
+        print(f"  {GREEN}✓{RESET} LLM Provider Key: {provider_name} ({provider_msg})")
+        checks_passed += 1
+    else:
+        print(f"  {RED}✗{RESET} LLM Provider Key: neither OPENROUTER_API_KEY nor GEMINI_API_KEY is set")
+        checks_failed += 1
     
     # Optional checks
     print(f"\n{BLUE}Optional Components:{RESET}")
@@ -239,7 +249,8 @@ def main():
         print("  3. Set up your API keys in .env file")
         print("     NEWS_API_KEY=your_key")
         print("     PINECONE_API_KEY=your_key")
-        print("     OPENROUTER_API_KEY=your_key")
+        print("     OPENROUTER_API_KEY=your_key  # optional")
+        print("     GEMINI_API_KEY=your_key       # optional")
         
         sys.exit(1)
     

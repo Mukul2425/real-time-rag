@@ -115,12 +115,16 @@ Your `.env` file should contain:
 NEWS_API_KEY=your_news_api_key_here
 PINECONE_API_KEY=your_pinecone_api_key_here  
 OPENROUTER_API_KEY=your_openrouter_api_key_here
+GEMINI_API_KEY=your_gemini_api_key_here
+LLM_PROVIDER=auto
+LLM_MODEL=
 ```
 
 **Get your API keys:**
 - **News API**: Sign up at [newsapi.org](https://newsapi.org/) (Free tier: 100 requests/day)
 - **Pinecone**: Sign up at [pinecone.io](https://pinecone.io/) (Free tier: 100k vectors)
 - **OpenRouter**: Sign up at [openrouter.ai](https://openrouter.ai/) (Pay-as-you-go)
+- **Gemini API**: Sign up at [Google AI Studio](https://aistudio.google.com/) for direct Gemini access
 
 **Validate your setup** (optional but recommended):
 ```bash
