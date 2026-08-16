@@ -2,6 +2,8 @@ import os
 import json
 import requests
 import io
+import hashlib
+import logging
 from dotenv import load_dotenv
 from kafka import KafkaConsumer
 try:
@@ -33,12 +35,15 @@ import torch
 from transformers import CLIPProcessor, CLIPModel
 import numpy as np
 from urllib.parse import urlparse
+from shared_runtime import DedupStore, retry_with_backoff, setup_logging
 
 # Load environment variables
 load_dotenv()
+logger = setup_logging("consumer")
+dedup_store = DedupStore(os.getenv("DEDUP_DB_PATH", ".rag_state/processed_items.sqlite"))
 
 # Initialize CLIP model for multimodal embeddings
-print("🤖 Loading CLIP model for multimodal embeddings...")
+logger.info("Loading CLIP model for multimodal embeddings")
 model_name = "openai/clip-vit-base-patch32"  # This produces 512-dim embeddings
 clip_model = CLIPModel.from_pretrained(model_name)
 clip_processor = CLIPProcessor.from_pretrained(model_name)
@@ -47,6 +52,7 @@ clip_processor = CLIPProcessor.from_pretrained(model_name)
 device = "cuda" if torch.cuda.is_available() else "cpu"
 clip_model = clip_model.to(device)
 print(f"✅ CLIP model loaded on {device}")
+logger.info("CLIP model loaded on %s", device)
 
 
 def _model_output_to_numpy(output):
@@ -82,7 +88,7 @@ try:
     existing_indexes = [index.name for index in pinecone_client.list_indexes()]
     
     if index_name not in existing_indexes:
-        print(f"Creating new multimodal index: {index_name}...")
+        logger.info("Creating new multimodal index: %s", index_name)
         pinecone_client.create_index(
             name=index_name,
             dimension=512,  # CLIP ViT-Base produces 512-dim embeddings
@@ -93,22 +99,22 @@ try:
             )
         )
         while not pinecone_client.describe_index(index_name).status['ready']:
-            print("Waiting for index to be ready...")
+            logger.info("Waiting for index to be ready")
             time.sleep(1)
-        print(f"✅ Index {index_name} created successfully!")
+        logger.info("Index %s created successfully", index_name)
     else:
-        print(f"✅ Index {index_name} already exists.")
+        logger.info("Index %s already exists", index_name)
         
 except Exception as e:
-    print(f"❌ Error with Pinecone index: {e}")
-    print("Please check your Pinecone API key and try again.")
+    logger.exception("Error with Pinecone index: %s", e)
+    logger.error("Please check your Pinecone API key and try again.")
     exit(1)
 
 try:
     index = pinecone_client.Index(index_name)
-    print(f"✅ Connected to Pinecone index: {index_name}")
+    logger.info("Connected to Pinecone index: %s", index_name)
 except Exception as e:
-    print(f"❌ Error connecting to Pinecone index: {e}")
+    logger.exception("Error connecting to Pinecone index: %s", e)
     exit(1)
 
 # Initialize Kafka Consumer
@@ -121,9 +127,9 @@ try:
         value_deserializer=lambda x: json.loads(x.decode('utf-8')),
         consumer_timeout_ms=30000  # 30 second timeout
     )
-    print("✅ Kafka consumer initialized successfully.")
+    logger.info("Kafka consumer initialized successfully")
 except Exception as e:
-    print(f"❌ Error initializing Kafka consumer: {e}")
+    logger.exception("Error initializing Kafka consumer: %s", e)
     exit(1)
 
 # Initialize text splitter
@@ -132,6 +138,7 @@ text_splitter = RecursiveCharacterTextSplitter(
     chunk_overlap=200
 )
 
+@retry_with_backoff(attempts=3, base_delay=1.0, max_delay=6.0)
 def download_image(url, max_size_mb=5):
     """Download and process image from URL"""
     try:
@@ -142,13 +149,13 @@ def download_image(url, max_size_mb=5):
         # Check content length
         content_length = response.headers.get('content-length')
         if content_length and int(content_length) > max_size_mb * 1024 * 1024:
-            print(f"   ⚠️  Image too large: {content_length} bytes")
+            logger.warning("Image too large: %s bytes", content_length)
             return None
         
         # Read image data
         image_data = response.content
         if len(image_data) > max_size_mb * 1024 * 1024:
-            print(f"   ⚠️  Image too large after download: {len(image_data)} bytes")
+            logger.warning("Image too large after download: %s bytes", len(image_data))
             return None
         
         # Open and process image
@@ -166,7 +173,7 @@ def download_image(url, max_size_mb=5):
         return image, image_data, url
         
     except Exception as e:
-        print(f"   ❌ Failed to download image from {url}: {e}")
+        logger.warning("Failed to download image from %s: %s", url, e)
         return None
 
 def create_multimodal_embeddings(text, images=None):
@@ -212,10 +219,10 @@ def create_multimodal_embeddings(text, images=None):
     
     return embeddings
 
-print("🔄 Starting Multimodal Kafka Consumer...")
-print("📊 Processing both text and images from news articles")
-print("🎯 Using CLIP for unified text-image embeddings")
-print("⏳ Waiting for messages...")
+logger.info("Starting Multimodal Kafka Consumer")
+logger.info("Processing both text and images from news articles")
+logger.info("Using CLIP for unified text-image embeddings")
+logger.info("Waiting for messages")
 
 articles_processed = 0
 vectors_created = 0
@@ -225,15 +232,22 @@ try:
     for message in consumer:
         article = message.value
         articles_processed += 1
-        print(f"\n{'='*60}")
-        print(f"📰 Processing article {articles_processed}")
-        print(f"Title: {article.get('title', 'Unknown title')}")
-        print(f"Images found: {article.get('image_count', 0)}")
+        logger.info("%s", "=" * 60)
+        logger.info("Processing article %s", articles_processed)
+        logger.info("Title: %s", article.get('title', 'Unknown title'))
+        logger.info("Images found: %s", article.get('image_count', 0))
         
         try:
             content = article.get('content')
             if not content or content.lower() in ['[removed]', 'null', '']:
-                print("❌ Skipping article with no content.")
+                logger.info("Skipping article with no content")
+                continue
+
+            article_url = article.get('url', '')
+            dedup_key_source = article_url or (article.get('title', '') + content[:200])
+            dedup_key = hashlib.sha256(dedup_key_source.encode('utf-8')).hexdigest()
+            if dedup_store.has(dedup_key):
+                logger.info("Skipping already processed article: %s", article.get('title', 'Unknown title'))
                 continue
             
             # Download images if available
@@ -241,25 +255,25 @@ try:
             image_urls = article.get('image_urls', [])
             
             if image_urls:
-                print(f"📸 Downloading {len(image_urls)} images...")
+                logger.info("Downloading %s images", len(image_urls))
                 for i, img_url in enumerate(image_urls):
-                    print(f"   Downloading image {i+1}: {img_url}")
+                    logger.info("Downloading image %s: %s", i + 1, img_url)
                     img_result = download_image(img_url)
                     if img_result:
                         downloaded_images.append(img_result)
                         images_processed += 1
-                        print(f"   ✅ Image {i+1} downloaded successfully")
+                        logger.info("Image %s downloaded successfully", i + 1)
                     else:
-                        print(f"   ❌ Failed to download image {i+1}")
+                        logger.warning("Failed to download image %s", i + 1)
             
             # 1. Split content into chunks
             chunks = text_splitter.split_text(content)
             if not chunks:
-                print("❌ No chunks created from content.")
+                logger.info("No chunks created from content")
                 continue
             
-            print(f"✅ Created {len(chunks)} text chunks")
-            print(f"✅ Downloaded {len(downloaded_images)} images")
+            logger.info("Created %s text chunks", len(chunks))
+            logger.info("Downloaded %s images", len(downloaded_images))
             
             # 2. Create multimodal embeddings for each chunk
             vectors_to_upsert = []
@@ -272,7 +286,7 @@ try:
                 embeddings = create_multimodal_embeddings(chunk, chunk_images)
                 
                 if not embeddings:
-                    print(f"   ❌ No embeddings created for chunk {chunk_idx}")
+                    logger.warning("No embeddings created for chunk %s", chunk_idx)
                     continue
                 
                 # Create vectors for each embedding
@@ -321,29 +335,30 @@ try:
                     text_vectors = sum(1 for v in vectors_to_upsert if v['metadata']['content_type'] == 'text')
                     image_vectors = sum(1 for v in vectors_to_upsert if v['metadata']['content_type'] == 'image')
                     
-                    print(f"✅ Upserted {len(vectors_to_upsert)} vectors:")
-                    print(f"   📄 Text vectors: {text_vectors}")
-                    print(f"   🖼️  Image vectors: {image_vectors}")
-                    print(f"📊 Total stats: {articles_processed} articles, {vectors_created} vectors, {images_processed} images")
+                    logger.info("Upserted %s vectors (text=%s image=%s)", len(vectors_to_upsert), text_vectors, image_vectors)
+                    logger.info("Total stats: %s articles, %s vectors, %s images", articles_processed, vectors_created, images_processed)
+                    dedup_store.add(dedup_key)
+                    logger.info("Marked article as processed: %s", article.get('title', 'Unknown title'))
                     
                 except Exception as upsert_error:
-                    print(f"❌ Error upserting to Pinecone: {upsert_error}")
+                    logger.exception("Error upserting to Pinecone: %s", upsert_error)
                     continue
             else:
-                print("❌ No vectors to upsert.")
+                logger.info("No vectors to upsert")
                 
         except Exception as e:
-            print(f"❌ Error processing article '{article.get('title', 'Unknown')}': {str(e)}")
+            logger.exception("Error processing article '%s': %s", article.get('title', 'Unknown'), str(e))
             continue
 
 except KeyboardInterrupt:
-    print(f"\n🛑 Shutting down consumer...")
-    print(f"📊 Final stats: {articles_processed} articles processed, {vectors_created} vectors created, {images_processed} images processed")
+    logger.info("Shutting down consumer")
+    logger.info("Final stats: %s articles processed, %s vectors created, %s images processed", articles_processed, vectors_created, images_processed)
 except Exception as e:
-    print(f"❌ Consumer error: {e}")
+    logger.exception("Consumer error: %s", e)
 finally:
     try:
         consumer.close()
-        print("✅ Consumer closed successfully.")
+        dedup_store.close()
+        logger.info("Consumer closed successfully")
     except:
         pass

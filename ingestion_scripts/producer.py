@@ -1,12 +1,13 @@
 import os
 import requests
 import time
+import logging
 from dotenv import load_dotenv
 from kafka import KafkaProducer
 import json
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
-import hashlib
+from shared_runtime import retry_with_backoff, setup_logging
 
 # Load environment variables from .env file
 load_dotenv()
@@ -15,6 +16,14 @@ load_dotenv()
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 # Poll interval in seconds between batches (env override)
 NEWS_POLL_INTERVAL = int(os.getenv("NEWS_POLL_INTERVAL", "600"))
+logger = setup_logging("producer")
+
+@retry_with_backoff(attempts=3, base_delay=1.0, max_delay=5.0)
+def _fetch_article_html(article_url):
+    response = requests.get(article_url, timeout=6)
+    response.raise_for_status()
+    return response.text
+
 
 def extract_image_urls(article):
     """Extract image URLs from article metadata and HTML (robust approach)
@@ -36,9 +45,7 @@ def extract_image_urls(article):
     article_url = article.get('url')
     if article_url:
         try:
-            resp = requests.get(article_url, timeout=6)
-            resp.raise_for_status()
-            html = resp.text
+            html = _fetch_article_html(article_url)
             soup = BeautifulSoup(html, 'html.parser')
 
             # OpenGraph / Twitter cards
@@ -64,9 +71,9 @@ def extract_image_urls(article):
                 if src and is_valid_image_url(src):
                     image_urls.append(src)
 
-        except Exception:
+        except Exception as error:
             # Ignore HTML fetch failures — we still return what we have
-            pass
+            logger.debug("Image extraction skipped for %s: %s", article_url, error)
 
     # De-duplicate while preserving order and validate extensions
     seen = set()
@@ -108,18 +115,18 @@ def create_kafka_producer(max_retries=5):
                 request_timeout_ms=10000,  # 10 seconds timeout
                 retries=3
             )
-            print("Successfully connected to Kafka!")
+            logger.info("Successfully connected to Kafka")
             return producer
         except Exception as e:
             # Log and retry
-            print(f"Attempt {attempt + 1}/{max_retries}: Kafka not available ({e}), waiting 10 seconds...")
+            logger.warning("Attempt %s/%s: Kafka not available (%s), waiting 10 seconds...", attempt + 1, max_retries, e)
             time.sleep(10)
 
     raise Exception("Failed to connect to Kafka after multiple attempts")
 
 def get_news_and_send_to_kafka(producer, query):
     """Fetches news from News API and sends it to a Kafka topic with image URLs."""
-    print(f"Fetching news for query: '{query}'")
+    logger.info("Fetching news for query: %s", query)
     url = f'https://newsapi.org/v2/everything?q={query}&apiKey={NEWS_API_KEY}&pageSize=20'
     
     try:
@@ -128,7 +135,7 @@ def get_news_and_send_to_kafka(producer, query):
         articles = response.json().get('articles', [])
         
         if not articles:
-            print("No new articles found.")
+            logger.info("No new articles found")
             return
         
         articles_with_images = 0
@@ -152,11 +159,9 @@ def get_news_and_send_to_kafka(producer, query):
                 
                 if image_urls:
                     articles_with_images += 1
-                    print(f"📸 Article with {len(image_urls)} images: {article['title'][:60]}...")
-                    for img_url in image_urls:
-                        print(f"   - {img_url}")
+                    logger.info("Article with %s images: %s...", len(image_urls), article['title'][:60])
                 else:
-                    print(f"📄 Text-only article: {article['title'][:60]}...")
+                    logger.info("Text-only article: %s...", article['title'][:60])
                 
                 # Send the enhanced article as a JSON message to Kafka
                 producer.send('market-news-raw', value=enhanced_article)
@@ -164,17 +169,14 @@ def get_news_and_send_to_kafka(producer, query):
         # Flush to ensure all messages are sent
         producer.flush()
         
-        print(f"\n📊 Summary:")
-        print(f"   - Total articles sent: {total_articles}")
-        print(f"   - Articles with images: {articles_with_images}")
-        print(f"   - Text-only articles: {total_articles - articles_with_images}")
+        logger.info("Summary: total=%s images=%s text_only=%s", total_articles, articles_with_images, total_articles - articles_with_images)
         
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching news: {e}")
+        logger.warning("Error fetching news: %s", e)
 
 if __name__ == "__main__":
-    print("🚀 Initializing Multimodal Kafka Producer...")
-    print("This version extracts both text and images from news articles")
+    logger.info("Initializing Multimodal Kafka Producer")
+    logger.info("This version extracts both text and images from news articles")
     
     try:
         # Create producer with retry logic
@@ -191,18 +193,18 @@ if __name__ == "__main__":
         # The script will run continuously to mimic real-time ingestion
         while True:
             for query in search_queries:
-                print(f"\n{'='*60}")
+                logger.info("%s", "=" * 60)
                 get_news_and_send_to_kafka(producer, query)
                 time.sleep(30)  # Wait between queries
                 
-            print(f"\n💤 Sleeping for 10 minutes before next batch...")
+            logger.info("Sleeping for 10 minutes before next batch")
             time.sleep(600)  # Sleep for 10 minutes (600 seconds)
             
     except KeyboardInterrupt:
-        print("Shutting down producer...")
+        logger.info("Shutting down producer")
         if 'producer' in locals():
             producer.close()
     except Exception as e:
-        print(f"Error: {e}")
+        logger.exception("Producer error: %s", e)
         if 'producer' in locals():
             producer.close()
