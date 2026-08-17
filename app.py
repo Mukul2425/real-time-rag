@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 import requests
 import base64
 import io
+import socket
 from PIL import Image
 import torch
 from transformers import CLIPProcessor, CLIPModel
@@ -17,6 +18,7 @@ except ImportError:
     USE_HUGGINGFACE_EMBEDDINGS = False
 
 from pinecone import Pinecone as PineconeClient
+from shared_runtime import MetricsStore, retry_with_backoff
 
 # Load environment variables
 load_dotenv()
@@ -25,6 +27,7 @@ DEFAULT_LLM_PROVIDER = os.getenv("LLM_PROVIDER", "auto").lower()
 DEFAULT_LLM_MODEL = os.getenv("LLM_MODEL", "").strip()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+metrics = MetricsStore(os.getenv("METRICS_DB_PATH", ".rag_state/metrics.sqlite"))
 
 OPENROUTER_MODELS = [
     "google/gemini-2.5-flash-image-preview",
@@ -146,6 +149,21 @@ def check_index_status(index):
         st.error(f"Error checking index status: {e}")
         return 0, None
 
+
+def check_kafka_reachable(host="localhost", port=9092, timeout=1.5):
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+def load_pipeline_metrics():
+    try:
+        return metrics.all()
+    except Exception:
+        return {}
+
 def _infer_mime_type(data_url):
     if data_url.startswith("data:") and ";base64," in data_url:
         return data_url.split(";base64,", 1)[0].replace("data:", "") or "image/png"
@@ -156,6 +174,26 @@ def _extract_base64_from_data_url(data_url):
     if data_url.startswith("data:") and ";base64," in data_url:
         return data_url.split(";base64,", 1)[1]
     return data_url
+
+
+def _image_to_data_url(image_path: str) -> str | None:
+    try:
+        path = image_path.strip()
+        if not path:
+            return None
+        with open(path, "rb") as handle:
+            image_bytes = handle.read()
+        mime_type = "image/png"
+        lower_path = path.lower()
+        if lower_path.endswith(".jpg") or lower_path.endswith(".jpeg"):
+            mime_type = "image/jpeg"
+        elif lower_path.endswith(".webp"):
+            mime_type = "image/webp"
+        elif lower_path.endswith(".gif"):
+            mime_type = "image/gif"
+        return f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode()}"
+    except Exception:
+        return None
 
 
 def _messages_to_gemini_payload(messages):
@@ -195,6 +233,14 @@ def _messages_to_gemini_payload(messages):
     return payload
 
 
+@retry_with_backoff(attempts=3, base_delay=1.5, max_delay=8.0)
+def _post_json(url, headers, payload, timeout=60):
+    response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+    if response.status_code >= 500 or response.status_code == 429:
+        raise requests.RequestException(f"Transient LLM error {response.status_code}: {response.text}")
+    return response
+
+
 def _call_openrouter(messages, model=None):
     models_to_try = [model] if model else []
     for candidate in OPENROUTER_MODELS:
@@ -210,10 +256,10 @@ def _call_openrouter(messages, model=None):
 
     for attempt, model_id in enumerate(models_to_try):
         try:
-            response = requests.post(
+            response = _post_json(
                 "https://openrouter.ai/api/v1/chat/completions",
                 headers=headers,
-                json={
+                payload={
                     "model": model_id,
                     "messages": messages,
                     "max_tokens": 1000,
@@ -243,10 +289,10 @@ def _call_gemini(messages, model=None):
     payload = _messages_to_gemini_payload(messages)
     for attempt, model_id in enumerate(models_to_try):
         try:
-            response = requests.post(
+            response = _post_json(
                 f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={GEMINI_API_KEY}",
                 headers={"Content-Type": "application/json"},
-                json=payload,
+                payload=payload,
                 timeout=60,
             )
             if response.status_code == 200:
@@ -336,6 +382,7 @@ The new system processes both text and images from EV news!""", []
             image_contexts.append({
                 'source': metadata.get('source', 'Unknown'),
                 'title': metadata.get('title', 'Unknown'),
+                'image_path': metadata.get('image_path', ''),
                 'image_url': metadata.get('image_url', ''),
                 'image_index': metadata.get('image_index', 0),
                 'text': metadata.get('text', ''),
@@ -403,23 +450,30 @@ Please provide a comprehensive answer using both text and image context where av
     
     # Add retrieved images to the context
     for img_ctx in image_contexts[:2]:  # Limit to 2 images to avoid token limits
-        # If the index stored an `image_url`, fetch and convert to data URL for the LLM
+        # If the index stored a local image path, load it for the LLM.
+        image_path = img_ctx.get('image_path')
+        if image_path:
+            data_url = _image_to_data_url(image_path)
+            if data_url:
+                messages[1]["content"].append({
+                    "type": "image_url",
+                    "image_url": {"url": data_url}
+                })
+                continue
+
+        # Backward compatibility: fall back to remote URLs if present.
         img_url = img_ctx.get('image_url')
         if img_url:
             try:
                 resp = requests.get(img_url, timeout=8)
                 resp.raise_for_status()
                 b64 = base64.b64encode(resp.content).decode()
-                # Try to infer content-type from headers
                 ctype = resp.headers.get('Content-Type', 'image/png')
                 messages[1]["content"].append({
                     "type": "image_url",
-                    "image_url": {
-                        "url": f"data:{ctype};base64,{b64}"
-                    }
+                    "image_url": {"url": f"data:{ctype};base64,{b64}"}
                 })
             except Exception:
-                # Skip adding this image if download fails
                 continue
     
     # 4. Query the multimodal LLM
@@ -437,11 +491,35 @@ try:
     
     # Check index status
     vector_count, stats = check_index_status(index)
+    pipeline_metrics = load_pipeline_metrics()
+    kafka_ok = check_kafka_reachable()
+    producer_count = pipeline_metrics.get("producer_articles_enqueued_total", 0)
+    consumer_count = pipeline_metrics.get("consumer_articles_processed_total", 0)
+    backlog_estimate = max(0, int(producer_count - consumer_count))
     
     if vector_count > 0:
         st.info(f"📊 Database contains {vector_count:,} multimodal vectors")
     else:
         st.warning("⚠️ Database is empty. Please run the data ingestion pipeline.")
+
+    st.subheader("📈 Pipeline Health")
+    status_col1, status_col2, status_col3, status_col4 = st.columns(4)
+    with status_col1:
+        st.metric("Kafka", "Healthy" if kafka_ok else "Down")
+    with status_col2:
+        st.metric("Producer Articles", f"{int(producer_count):,}")
+    with status_col3:
+        st.metric("Consumer Articles", f"{int(consumer_count):,}")
+    with status_col4:
+        st.metric("Estimated Backlog", f"{backlog_estimate:,}")
+
+    metrics_col1, metrics_col2, metrics_col3 = st.columns(3)
+    with metrics_col1:
+        st.caption(f"Image downloads failed: {int(pipeline_metrics.get('consumer_image_download_failures_total', 0)):,}")
+    with metrics_col2:
+        st.caption(f"Pinecone upserts: {int(pipeline_metrics.get('consumer_vectors_upserted_total', 0)):,}")
+    with metrics_col3:
+        st.caption(f"Dead letters: {int(pipeline_metrics.get('consumer_dead_letter_total', 0)):,}")
     
     # Create two columns for input
     col1, col2 = st.columns([2, 1])
