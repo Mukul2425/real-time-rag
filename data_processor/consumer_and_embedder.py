@@ -3,7 +3,6 @@ import json
 import requests
 import io
 import hashlib
-import logging
 from dotenv import load_dotenv
 from kafka import KafkaConsumer
 try:
@@ -35,12 +34,15 @@ import torch
 from transformers import CLIPProcessor, CLIPModel
 import numpy as np
 from urllib.parse import urlparse
-from shared_runtime import DedupStore, retry_with_backoff, setup_logging
+from shared_runtime import DeadLetterStore, DedupStore, LocalObjectStore, MetricsStore, retry_with_backoff, setup_logging
 
 # Load environment variables
 load_dotenv()
 logger = setup_logging("consumer")
 dedup_store = DedupStore(os.getenv("DEDUP_DB_PATH", ".rag_state/processed_items.sqlite"))
+metrics = MetricsStore(os.getenv("METRICS_DB_PATH", ".rag_state/metrics.sqlite"))
+object_store = LocalObjectStore(os.getenv("OBJECT_STORE_DIR", ".rag_state/object_store"))
+dead_letters = DeadLetterStore(os.getenv("DEAD_LETTER_FILE", ".rag_state/dead_letters.jsonl"))
 
 # Initialize CLIP model for multimodal embeddings
 logger.info("Loading CLIP model for multimodal embeddings")
@@ -174,6 +176,7 @@ def download_image(url, max_size_mb=5):
         
     except Exception as e:
         logger.warning("Failed to download image from %s: %s", url, e)
+        metrics.increment("consumer_image_download_failures_total", 1)
         return None
 
 def create_multimodal_embeddings(text, images=None):
@@ -196,7 +199,7 @@ def create_multimodal_embeddings(text, images=None):
             
             # Create image embeddings if images are provided
             if images:
-                for i, (image, image_data, image_url) in enumerate(images):
+                for i, (image, image_data, image_path) in enumerate(images):
                     try:
                         image_inputs = clip_processor(images=[image], return_tensors="pt", padding=True)
                         image_inputs = {k: v.to(device) for k, v in image_inputs.items()}
@@ -206,7 +209,7 @@ def create_multimodal_embeddings(text, images=None):
                             'type': 'image',
                             'embedding': image_embedding.tolist(),
                             'image_index': i,
-                            'image_url': image_url
+                            'image_path': image_path
                         })
                         
                     except Exception as img_error:
@@ -241,6 +244,8 @@ try:
             content = article.get('content')
             if not content or content.lower() in ['[removed]', 'null', '']:
                 logger.info("Skipping article with no content")
+                dead_letters.write(article, "missing_or_removed_content", "consume")
+                metrics.increment("consumer_dead_letter_total", 1)
                 continue
 
             article_url = article.get('url', '')
@@ -248,6 +253,7 @@ try:
             dedup_key = hashlib.sha256(dedup_key_source.encode('utf-8')).hexdigest()
             if dedup_store.has(dedup_key):
                 logger.info("Skipping already processed article: %s", article.get('title', 'Unknown title'))
+                metrics.increment("consumer_skipped_duplicates_total", 1)
                 continue
             
             # Download images if available
@@ -260,8 +266,13 @@ try:
                     logger.info("Downloading image %s: %s", i + 1, img_url)
                     img_result = download_image(img_url)
                     if img_result:
-                        downloaded_images.append(img_result)
+                        image, image_data, image_url = img_result
+                        image_key = hashlib.sha256(image_data).hexdigest()
+                        image_suffix = os.path.splitext(urlparse(img_url).path)[1] or ".bin"
+                        image_path = object_store.save_bytes(image_data, image_key, suffix=image_suffix)
+                        downloaded_images.append((image, image_data, image_path))
                         images_processed += 1
+                        metrics.increment("consumer_images_downloaded_total", 1)
                         logger.info("Image %s downloaded successfully", i + 1)
                     else:
                         logger.warning("Failed to download image %s", i + 1)
@@ -309,8 +320,9 @@ try:
                             "content_type": "text"
                         })
                     else:  # image
+                        image_path = chunk_images[embedding_data['image_index']][2] if chunk_images and embedding_data['image_index'] < len(chunk_images) else ''
                         metadata.update({
-                            "image_url": embedding_data.get('image_url', ''),
+                            "image_path": image_path,
                             "image_index": embedding_data['image_index'],
                             "content_type": "image",
                             "text": f"Image {embedding_data['image_index'] + 1} from article: {article.get('title', 'Unknown')}"
@@ -337,17 +349,26 @@ try:
                     
                     logger.info("Upserted %s vectors (text=%s image=%s)", len(vectors_to_upsert), text_vectors, image_vectors)
                     logger.info("Total stats: %s articles, %s vectors, %s images", articles_processed, vectors_created, images_processed)
+                    metrics.increment("consumer_articles_processed_total", 1)
+                    metrics.increment("consumer_vectors_upserted_total", len(vectors_to_upsert))
+                    metrics.increment("consumer_upsert_batches_total", 1)
                     dedup_store.add(dedup_key)
                     logger.info("Marked article as processed: %s", article.get('title', 'Unknown title'))
                     
                 except Exception as upsert_error:
                     logger.exception("Error upserting to Pinecone: %s", upsert_error)
+                    dead_letters.write(article, f"pinecone_upsert_failed: {upsert_error}", "upsert")
+                    metrics.increment("consumer_upsert_failures_total", 1)
                     continue
             else:
                 logger.info("No vectors to upsert")
+                dead_letters.write(article, "no_vectors_created", "embed")
+                metrics.increment("consumer_no_vectors_total", 1)
                 
         except Exception as e:
             logger.exception("Error processing article '%s': %s", article.get('title', 'Unknown'), str(e))
+            dead_letters.write(article, f"consumer_error: {e}", "consume")
+            metrics.increment("consumer_processing_failures_total", 1)
             continue
 
 except KeyboardInterrupt:
@@ -359,6 +380,7 @@ finally:
     try:
         consumer.close()
         dedup_store.close()
+        metrics.close()
         logger.info("Consumer closed successfully")
     except:
         pass
