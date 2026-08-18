@@ -1,13 +1,12 @@
 import os
 import requests
 import time
-import logging
 from dotenv import load_dotenv
 from kafka import KafkaProducer
 import json
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
-from shared_runtime import retry_with_backoff, setup_logging
+from shared_runtime import MetricsStore, retry_with_backoff, setup_logging
 
 # Load environment variables from .env file
 load_dotenv()
@@ -17,6 +16,7 @@ NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 # Poll interval in seconds between batches (env override)
 NEWS_POLL_INTERVAL = int(os.getenv("NEWS_POLL_INTERVAL", "600"))
 logger = setup_logging("producer")
+metrics = MetricsStore(os.getenv("METRICS_DB_PATH", ".rag_state/metrics.sqlite"))
 
 @retry_with_backoff(attempts=3, base_delay=1.0, max_delay=5.0)
 def _fetch_article_html(article_url):
@@ -133,6 +133,7 @@ def get_news_and_send_to_kafka(producer, query):
         response = requests.get(url, timeout=10)
         response.raise_for_status() # Raises an HTTPError for bad responses
         articles = response.json().get('articles', [])
+        metrics.increment("producer_news_requests_total", 1)
         
         if not articles:
             logger.info("No new articles found")
@@ -165,6 +166,8 @@ def get_news_and_send_to_kafka(producer, query):
                 
                 # Send the enhanced article as a JSON message to Kafka
                 producer.send('market-news-raw', value=enhanced_article)
+                metrics.increment("producer_articles_enqueued_total", 1)
+                metrics.increment("producer_images_extracted_total", len(image_urls))
         
         # Flush to ensure all messages are sent
         producer.flush()
@@ -173,6 +176,7 @@ def get_news_and_send_to_kafka(producer, query):
         
     except requests.exceptions.RequestException as e:
         logger.warning("Error fetching news: %s", e)
+        metrics.increment("producer_news_request_failures_total", 1)
 
 if __name__ == "__main__":
     logger.info("Initializing Multimodal Kafka Producer")
@@ -208,3 +212,8 @@ if __name__ == "__main__":
         logger.exception("Producer error: %s", e)
         if 'producer' in locals():
             producer.close()
+    finally:
+        try:
+            metrics.close()
+        except Exception:
+            pass
