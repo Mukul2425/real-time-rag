@@ -437,9 +437,9 @@ A: Yes! Modify `producer.py` to fetch from any source - RSS feeds, web scrapers,
 
 **Q: How much does it cost to run?**
 A: Costs depend on usage:
-- Pinecone: Free tier available (100k vectors)
+- Pinecone: Free tier available (~100k vectors)
 - OpenRouter: Pay per use (~$0.50-2.00 per 1M tokens)
-- News API: Free tier available (100 requests/day)
+- News API: Free tier available (~100 requests/day)
 
 **Q: Can I run this without GPU?**
 A: Yes, but it will be slower. CPU mode works fine for small-scale usage.
